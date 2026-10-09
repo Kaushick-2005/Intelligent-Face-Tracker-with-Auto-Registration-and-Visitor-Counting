@@ -173,6 +173,54 @@ class DatabaseManager:
         print(f"[DB] Visitor successfully stored: {visitor_id}")
         return sqlite_written or mongo_written
 
+    def get_registration_crop_path(self, visitor_id):
+        """Return the stored registration crop path for a visitor, if available."""
+        with sqlite3.connect(self.sqlite_path) as conn:
+            row = conn.execute(
+                "SELECT crop_image_path FROM visitors WHERE visitor_id = ?",
+                (visitor_id,),
+            ).fetchone()
+        if row and row[0]:
+            return self._portable_path(row[0])
+
+        if self.visitors_col is not None:
+            try:
+                document = self.visitors_col.find_one(
+                    {"visitor_id": visitor_id},
+                    {"crop_image_path": 1},
+                )
+                if document and document.get("crop_image_path"):
+                    return self._portable_path(document["crop_image_path"])
+            except Exception as err:
+                print(f"[WARNING] Could not read registration crop path for {visitor_id}: {err}")
+        return None
+
+    def update_registration_crop_path(self, visitor_id, crop_path):
+        """Persist a corrected registration crop path in the available stores."""
+        portable_path = self._portable_path(crop_path)
+        sqlite_written = False
+        try:
+            with sqlite3.connect(self.sqlite_path) as conn:
+                cursor = conn.execute(
+                    "UPDATE visitors SET crop_image_path = ? WHERE visitor_id = ?",
+                    (portable_path, visitor_id),
+                )
+                conn.commit()
+                sqlite_written = cursor.rowcount > 0
+        except Exception as err:
+            print(f"[ERROR] SQLite registration path update failed: {err}")
+
+        if self.visitors_col is not None:
+            try:
+                self.visitors_col.update_one(
+                    {"visitor_id": visitor_id},
+                    {"$set": {"crop_image_path": portable_path}},
+                )
+                sqlite_written = True
+            except Exception as err:
+                print(f"[WARNING] MongoDB registration path update failed: {err}")
+        return sqlite_written
+
     def repair_missing_registration_crops(self):
         """Restore missing registration files from available entry crops."""
         visitor_paths = {}

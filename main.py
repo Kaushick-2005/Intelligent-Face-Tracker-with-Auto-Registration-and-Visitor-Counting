@@ -138,6 +138,28 @@ def match_or_register_visitor(face_crop):
 
     if max_sim >= SIMILARITY_THRESHOLD:
         log_system_event(f"[RE-ID] Recognized visitor {best_match_id} (Cosine Similarity: {max_sim:.3f} >= {SIMILARITY_THRESHOLD})")
+        registration_path = db_manager.get_registration_crop_path(best_match_id)
+        if registration_path:
+            registration_absolute_path = os.path.join(ROOT_DIR, registration_path.replace("/", os.sep))
+        else:
+            registration_absolute_path = os.path.join(
+                get_crop_dir("REGISTRATION"),
+                f"{best_match_id}_registered.jpg",
+            )
+
+        if not os.path.isfile(registration_absolute_path):
+            os.makedirs(os.path.dirname(registration_absolute_path), exist_ok=True)
+            if face_crop.size > 0 and cv2.imwrite(registration_absolute_path, face_crop):
+                stored_path = os.path.relpath(registration_absolute_path, ROOT_DIR)
+                db_manager.update_registration_crop_path(best_match_id, stored_path)
+                log_system_event(
+                    f"[REGISTRATION] Restored registration face crop for {best_match_id} "
+                    f"to: {stored_path.replace(os.sep, '/')}"
+                )
+            else:
+                log_system_event(
+                    f"[ERROR] Could not restore registration crop for {best_match_id}."
+                )
         return best_match_id, embedding, False
 
     # Auto-register new unique visitor
