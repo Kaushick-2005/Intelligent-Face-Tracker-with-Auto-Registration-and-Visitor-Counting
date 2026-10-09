@@ -20,6 +20,11 @@ DB_CONFIG = config.get("database", {})
 MONGODB_URI = DB_CONFIG.get("mongodb_uri", "mongodb://localhost:27017/")
 DB_NAME = DB_CONFIG.get("database_name", "intelligent_face_tracker")
 SQLITE_PATH = os.path.join(ROOT_DIR, DB_CONFIG.get("sqlite_path", "database/intelligent_face_tracker.sqlite3"))
+MONGO_SERVER_SELECTION_TIMEOUT_MS = int(
+    DB_CONFIG.get("server_selection_timeout_ms", 10000)
+)
+MONGO_CONNECT_TIMEOUT_MS = int(DB_CONFIG.get("connect_timeout_ms", 10000))
+MONGO_SOCKET_TIMEOUT_MS = int(DB_CONFIG.get("socket_timeout_ms", 10000))
 
 
 class DatabaseManager:
@@ -39,16 +44,32 @@ class DatabaseManager:
         self._init_sqlite()
         self._normalize_sqlite_paths()
 
-        # Connect to MongoDB
+        # Connect to MongoDB. Atlas DNS discovery can take longer than the
+        # default timeout on the first request, so use bounded retries.
         try:
             import pymongo
-            self.client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=3000)
-            self.client.server_info()  # Validate connection
+
+            self.client = pymongo.MongoClient(
+                uri,
+                serverSelectionTimeoutMS=MONGO_SERVER_SELECTION_TIMEOUT_MS,
+                connectTimeoutMS=MONGO_CONNECT_TIMEOUT_MS,
+                socketTimeoutMS=MONGO_SOCKET_TIMEOUT_MS,
+                retryWrites=True,
+            )
+            self.client.admin.command("ping")
             self.mongo_db = self.client[db_name]
             self.visitors_col = self.mongo_db["visitors"]
             self.events_col = self.mongo_db["events"]
             self._ensure_mongo_collections()
-            self._normalize_mongo_paths()
+            try:
+                self._normalize_mongo_paths()
+            except Exception as err:
+                print(f"[WARNING] MongoDB path normalization skipped: {err}")
+
+            # A previous offline run may have written only to SQLite. Backfill
+            # those records as soon as MongoDB becomes available.
+            if self.visitors_col.count_documents({}) == 0:
+                self._sync_visitors_to_mongo()
             print(f"[INFO] Connected successfully to MongoDB: '{db_name}'")
         except Exception as e:
             print(f"[WARNING] MongoDB connection failed ({e}). Using SQLite3 local engine.")
